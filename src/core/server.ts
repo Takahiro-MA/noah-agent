@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { BridgeService } from "./bridge-service.js";
-import { startCronSync, configurePaths, syncSchedules } from "./cron-sync.js";
+import { Scheduler } from "../scheduler/scheduler.js";
 import { createSlackAdapter } from "../slack/slack-adapter.js";
 import type { NoahConfig } from "./types.js";
 import { DEFAULTS } from "./types.js";
@@ -80,13 +80,14 @@ function loadConfig(): NoahConfig {
 async function main() {
   const config = loadConfig();
 
-  // Configure cron-sync paths
-  configurePaths({
-    schedulesDir: config.schedulesDir,
-    stateDir: config.stateDir,
-  });
-
   const service = new BridgeService(config);
+
+  // Start scheduler
+  const scheduler = new Scheduler(
+    { stateDir: config.stateDir, schedulesDir: config.schedulesDir },
+    service,
+  );
+  scheduler.start();
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -229,34 +230,9 @@ async function main() {
         return;
       }
 
-      // Schedule sync - trigger manual sync
-      if (pathname === "/schedules/sync" && req.method === "POST") {
-        const result = syncSchedules();
-        sendJson(res, 200, { ok: true, ...result });
-        return;
-      }
-
-      // Schedule sync - list current schedule files
+      // List scheduled jobs
       if (pathname === "/schedules" && req.method === "GET") {
-        try {
-          const files = fs.existsSync(config.schedulesDir)
-            ? fs.readdirSync(config.schedulesDir).filter((f) => f.endsWith(".json"))
-            : [];
-          const schedules = files.map((f) => {
-            try {
-              const content = fs.readFileSync(path.join(config.schedulesDir, f), "utf-8");
-              return { file: f, ...JSON.parse(content) };
-            } catch {
-              return { file: f, error: "parse error" };
-            }
-          });
-          sendJson(res, 200, { ok: true, schedules });
-        } catch (err) {
-          sendJson(res, 500, {
-            ok: false,
-            error: { type: "internal_error", message: String(err) },
-          });
-        }
+        sendJson(res, 200, { ok: true, jobs: scheduler.listJobs() });
         return;
       }
 
@@ -273,9 +249,6 @@ async function main() {
       });
     }
   });
-
-  // Start schedule sync watcher
-  const cronSync = startCronSync();
 
   // Start Slack adapter if tokens are configured
   let slackAdapter: { start: () => Promise<void>; stop: () => Promise<void> } | null = null;
@@ -305,7 +278,7 @@ async function main() {
 
   const shutdown = async () => {
     console.log("[noah-agent] Shutting down...");
-    cronSync.stop();
+    scheduler.stop();
     if (slackAdapter) await slackAdapter.stop();
     service.shutdown();
     server.close();

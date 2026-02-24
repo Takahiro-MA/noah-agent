@@ -9,10 +9,12 @@
     "dev": "tsx src/core/server.ts"
   },
   "dependencies": {
-    "@slack/bolt": "^4.6.0"
+    "@slack/bolt": "^4.6.0",
+    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/node-cron": "^3.0.11",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
