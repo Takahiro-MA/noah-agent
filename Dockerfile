@@ -1,5 +1,14 @@
 FROM node:22-bookworm-slim
 
+# Install Python and common dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user
 RUN useradd -m -s /bin/bash noah
 
@@ -11,14 +20,15 @@ WORKDIR /app
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json ./
-RUN npm ci --production
+RUN npm ci --omit=dev
 
 # Copy built application
 COPY dist/ dist/
 COPY config/ config/
 
-# Ensure state directory exists
-RUN mkdir -p /home/noah/.noah-agent/state && chown -R noah:noah /home/noah
+# Ensure directories exist
+RUN mkdir -p /home/noah/.noah-agent/state /workspace /trading && \
+    chown -R noah:noah /home/noah /workspace /trading
 
 # Switch to non-root user
 USER noah
