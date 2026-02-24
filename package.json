@@ -1,0 +1,17 @@
+{
+  "name": "noah-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Self-hosted autonomous AI agent powered by Claude CLI",
+  "scripts": {
+    "start": "node dist/core/server.js",
+    "build": "tsc",
+    "dev": "tsx src/core/server.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
