@@ -2,9 +2,10 @@
 # Run Noah Agent in Docker
 #
 # Mounts:
-#   ~/.claude/ (ro)              → Claude CLI config, auth, rules, agents, skills
+#   ~/.claude/                   → Claude CLI config, auth, rules, agents, skills (rw: CLI writes state)
+#   ~/.claude.json               → Claude CLI global settings (rw: CLI writes debug/todos)
 #   ~/noah-agent/.env            → Environment variables (Slack tokens, API keys, etc.)
-#   ~/noah-agent/config/         → Schedule definitions, config
+#   ~/noah-agent/config/         → Schedule definitions, config (ro)
 #   ~/noah-workspace/            → Persistent workspace for Claude CLI (rw)
 #   ~/.openclaw/workspace/projects/gmo-trading/ → GMO trading bot (rw)
 
@@ -27,8 +28,10 @@ if [[ "${1:-}" == "--build" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/nu
 fi
 
 # Build volume mount args
+# Note: ~/.claude and ~/.claude.json need rw — Claude CLI writes session state, debug, todos
 VOLUMES=(
-  -v "$HOME/.claude:/home/noah/.claude:ro"
+  -v "$HOME/.claude:/home/noah/.claude"
+  -v "$HOME/.claude.json:/home/noah/.claude.json"
   -v "$SCRIPT_DIR/config:/app/config:ro"
   -v "$WORKSPACE_DIR:/workspace"
 )
@@ -41,7 +44,12 @@ fi
 
 echo "[noah] Starting Noah Agent..."
 echo "[noah] Workspace: $WORKSPACE_DIR"
-docker run --rm -it \
+DOCKER_TTY=""
+if [ -t 0 ]; then
+  DOCKER_TTY="-it"
+fi
+
+docker run --rm $DOCKER_TTY \
   --name noah-agent \
   --env-file "$SCRIPT_DIR/.env" \
   -e "NOAH_WORKSPACE_DIR=/workspace" \

@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m -s /bin/bash noah
+# Reuse built-in 'node' user (uid=1000) — matches host user for volume permissions
+RUN usermod -d /home/noah node && mv /home/node /home/noah
 
 # Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code@latest
@@ -26,12 +26,12 @@ RUN npm ci --omit=dev
 COPY dist/ dist/
 COPY config/ config/
 
-# Ensure directories exist
+# Ensure directories exist (node user owns them)
 RUN mkdir -p /home/noah/.noah-agent/state /workspace /trading && \
-    chown -R noah:noah /home/noah /workspace /trading
+    chown -R 1000:1000 /home/noah /workspace /trading
 
-# Switch to non-root user
-USER noah
+# Switch to uid 1000 (node user, renamed home to /home/noah)
+USER 1000
 
 # Environment defaults
 ENV NODE_ENV=production
