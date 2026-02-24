@@ -10,6 +10,8 @@
  * - Execute one-shot trades via Claude analysis
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import { runScript, type ScriptResult } from "../../runners/script-runner.js";
 
 export type TraderConfig = {
@@ -28,10 +30,43 @@ export type TraderStatus = {
 export class CryptoTrader {
   private readonly config: TraderConfig;
   private readonly python: string;
+  private readonly activeMarker: string;
 
   constructor(config: TraderConfig) {
     this.config = config;
     this.python = config.pythonCommand ?? "python3";
+    this.activeMarker = path.join(config.botDir, "logs", ".trader_active");
+  }
+
+  /**
+   * Start continuous paper trading and enable heartbeat monitoring.
+   * Creates .trader_active marker so the heartbeat job knows to monitor.
+   */
+  async start(): Promise<ScriptResult> {
+    fs.mkdirSync(path.dirname(this.activeMarker), { recursive: true });
+    fs.writeFileSync(this.activeMarker, new Date().toISOString());
+    console.log("[crypto-trader] Started — heartbeat monitoring enabled");
+    return this.runCycle();
+  }
+
+  /**
+   * Stop paper trading and disable heartbeat monitoring.
+   * Removes .trader_active marker so the heartbeat job skips checks.
+   */
+  stop(): void {
+    try {
+      fs.unlinkSync(this.activeMarker);
+    } catch {
+      // already removed
+    }
+    console.log("[crypto-trader] Stopped — heartbeat monitoring disabled");
+  }
+
+  /**
+   * Check if paper trader is marked as active.
+   */
+  isActive(): boolean {
+    return fs.existsSync(this.activeMarker);
   }
 
   /**

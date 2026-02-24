@@ -1,0 +1,16 @@
+{
+  "id": "nightly-journal",
+  "name": "毎晩の日記・振り返り",
+  "description": "1日の出来事を振り返り、学びや感想をまとめてSlackに投稿",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "0 23 * * *",
+    "tz": "Asia/Tokyo"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "message": "今日の日記タスク: 今日のセッション履歴を確認し、1日の出来事・学び・感想を簡潔にまとめて。重要な決定や発見があればハイライトして。結果はSlackの#generalに投稿して。",
+    "timeoutSeconds": 120
+  }
+}

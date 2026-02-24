@@ -1,0 +1,15 @@
+{
+  "id": "paper-trader-heartbeat",
+  "name": "Paper Trader 生存監視",
+  "description": "Paper Traderのログ更新を30分ごとに確認し、異常時にSlack通知",
+  "enabled": true,
+  "schedule": {
+    "kind": "every",
+    "everyMs": 1800000
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "message": "生存監視タスク:\n\n【前提】まず /trading/logs/.trader_active ファイルの存在を確認。存在しなければ Paper Trader は停止中なので、何もせず終了してください。\n\n【ファイルが存在する場合】/trading/logs/paper_trader.log の最終更新日時を確認してください。\n\n【ルール】\n- 最終更新が40分以上前 → Slack DMで「⚠️ Paper Trader 異常: ログが {経過時間分} 分間更新されていません」と通知\n- 前回異常→今回正常に復旧 → Slack DMで「✅ Paper Trader 復旧: ログ更新再開」と1回だけ通知\n- 正常な場合 → 何もしない（通知不要、返答も不要）\n\n状態は /trading/logs/.heartbeat_state に記録してください（last_status: ok|error）。",
+    "timeoutSeconds": 60
+  }
+}
