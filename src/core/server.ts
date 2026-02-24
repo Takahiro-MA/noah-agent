@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { BridgeService } from "./bridge-service.js";
+import { TaskRouter } from "./task-router.js";
 import { Scheduler } from "../scheduler/scheduler.js";
 import { createSlackAdapter } from "../slack/slack-adapter.js";
 import type { NoahConfig } from "./types.js";
@@ -81,6 +82,7 @@ async function main() {
   const config = loadConfig();
 
   const service = new BridgeService(config);
+  const router = new TaskRouter(service, process.env.OPENAI_API_KEY);
 
   // Start scheduler
   const scheduler = new Scheduler(
@@ -233,6 +235,51 @@ async function main() {
       // List scheduled jobs
       if (pathname === "/schedules" && req.method === "GET") {
         sendJson(res, 200, { ok: true, jobs: scheduler.listJobs() });
+        return;
+      }
+
+      // Routed task (multi-agent capable)
+      if (pathname === "/route" && req.method === "POST") {
+        const body = await parseJsonBody(req);
+        const message = typeof body.message === "string" ? body.message.trim() : "";
+        if (!message) {
+          sendJson(res, 400, {
+            ok: false,
+            error: { type: "invalid_request", message: "message is required" },
+          });
+          return;
+        }
+
+        const routeParams = {
+          message,
+          runner: typeof body.runner === "string" ? body.runner as "claude" | "codex" | "script" | "multi" : undefined,
+          sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+          model: typeof body.model === "string" ? body.model : undefined,
+          systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : undefined,
+          timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+          command: typeof body.command === "string" ? body.command : undefined,
+          args: Array.isArray(body.args) ? body.args as string[] : undefined,
+          cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+          subtasks: Array.isArray(body.subtasks) ? body.subtasks as Array<{
+            runner: "claude" | "codex" | "script" | "multi";
+            message: string;
+            model?: string;
+            systemPrompt?: string;
+          }> : undefined,
+        };
+
+        try {
+          const result = await router.route(routeParams);
+          sendJson(res, 200, { ok: true, ...result });
+        } catch (err) {
+          sendJson(res, 500, {
+            ok: false,
+            error: {
+              type: "runner_error",
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
         return;
       }
 

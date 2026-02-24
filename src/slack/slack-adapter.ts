@@ -12,12 +12,16 @@ type SlackAdapter = {
   stop: () => Promise<void>;
 };
 
+const UPDATE_INTERVAL_MS = 2000;
+const MAX_SLACK_LENGTH = 3900;
+
 /**
  * Create a Slack adapter that bridges DM messages to the BridgeService.
  *
  * - DMs are forwarded to Claude CLI via BridgeService
  * - Threads map to sessions for multi-turn conversations
- * - Results are posted back as threaded replies
+ * - Streaming text is progressively updated in Slack (chat.update)
+ * - Results are posted as threaded replies
  */
 export function createSlackAdapter(
   config: SlackConfig,
@@ -34,30 +38,26 @@ export function createSlackAdapter(
 
   // Handle DM messages
   app.message(async ({ message, say, client }) => {
-    // Only handle actual user messages (not bot messages, edits, etc.)
     const msg = message as { subtype?: string; bot_id?: string; text?: string; thread_ts?: string; ts: string; channel: string; user?: string };
     if (msg.subtype || msg.bot_id) return;
 
     const text = msg.text?.trim();
     if (!text) return;
 
-    // Determine thread context
     const threadTs = msg.thread_ts ?? msg.ts;
     const isInThread = Boolean(msg.thread_ts);
 
-    // Only respond in DMs (im channel type)
+    // Only respond in DMs
     try {
       const info = await client.conversations.info({ channel: msg.channel });
       const ch = info.channel as Record<string, unknown> | undefined;
       if (ch && !ch.is_im) {
-        return; // Skip non-DM channels for now
+        return;
       }
     } catch {
-      // If we can't determine channel type, skip
       return;
     }
 
-    // Resolve session: reuse if in an existing thread, create new otherwise
     let sessionId: string | undefined;
     if (isInThread && threadSessions.has(threadTs)) {
       sessionId = threadSessions.get(threadTs);
@@ -67,73 +67,111 @@ export function createSlackAdapter(
       `[slack] Message from ${msg.user ?? "unknown"} in thread ${threadTs}: ${text.slice(0, 80)}${text.length > 80 ? "..." : ""}`,
     );
 
-    // Post a "thinking" indicator
-    const thinkingMsg = await say({
-      text: ":hourglass_flowing_sand: Processing...",
+    // Post initial "thinking" message (will be updated progressively)
+    const progressMsg = await say({
+      text: ":hourglass_flowing_sand: Thinking...",
       thread_ts: threadTs,
     });
 
+    const progressTs = progressMsg.ts;
+
     try {
-      const { sessionId: assignedSessionId, events, cancel } =
+      const { sessionId: assignedSessionId, events } =
         service.submitTaskStream({
           message: text,
           sessionId,
           streaming: true,
         });
 
-      // Store thread → session mapping
       threadSessions.set(threadTs, assignedSessionId);
 
-      // Wait for the result
+      // Progressive streaming update
       const resultText = await new Promise<string>((resolve, reject) => {
-        let finalText = "";
+        let accumulated = "";
+        let lastUpdateAt = 0;
+        let updateTimer: ReturnType<typeof setTimeout> | null = null;
+        let isThinking = true;
+
+        const updateSlackMessage = () => {
+          if (!progressTs || !accumulated) return;
+
+          const display = accumulated.length > MAX_SLACK_LENGTH
+            ? accumulated.slice(0, MAX_SLACK_LENGTH) + "\n\n... _(truncated, full response follows)_"
+            : accumulated;
+
+          const prefix = isThinking ? ":brain: " : "";
+          const suffix = "\n\n:writing_hand: _generating..._";
+
+          client.chat.update({
+            channel: msg.channel,
+            ts: progressTs,
+            text: prefix + display + suffix,
+          }).catch(() => {
+            // Best-effort update
+          });
+
+          lastUpdateAt = Date.now();
+        };
+
+        const scheduleUpdate = () => {
+          if (updateTimer) return;
+          const elapsed = Date.now() - lastUpdateAt;
+          const delay = Math.max(0, UPDATE_INTERVAL_MS - elapsed);
+          updateTimer = setTimeout(() => {
+            updateTimer = null;
+            updateSlackMessage();
+          }, delay);
+        };
 
         events.on("event", (evt: StreamEvent) => {
-          if (evt.type === "result") {
-            finalText = evt.text;
+          if (evt.type === "text_delta") {
+            isThinking = false;
+            accumulated += evt.text;
+            scheduleUpdate();
+          } else if (evt.type === "thinking_delta") {
+            isThinking = true;
+          } else if (evt.type === "result") {
+            accumulated = evt.text || accumulated;
           }
         });
 
         events.on("done", (result: BridgeTaskResult) => {
-          resolve(result.text || finalText);
+          if (updateTimer) clearTimeout(updateTimer);
+          resolve(result.text || accumulated);
         });
 
         events.on("error", (err: Error) => {
+          if (updateTimer) clearTimeout(updateTimer);
           reject(err);
         });
       });
 
-      // Delete thinking message and post result
-      if (thinkingMsg.ts) {
-        await client.chat.delete({
+      // Final update: replace progress message with final result
+      if (progressTs) {
+        const chunks = splitMessage(resultText, MAX_SLACK_LENGTH);
+        // Update first message in-place
+        await client.chat.update({
           channel: msg.channel,
-          ts: thinkingMsg.ts,
-        }).catch(() => {
-          // Best-effort delete (may lack permission)
-        });
-      }
+          ts: progressTs,
+          text: chunks[0],
+        }).catch(() => {});
 
-      // Split long messages (Slack limit: ~4000 chars)
-      const chunks = splitMessage(resultText, 3900);
-      for (const chunk of chunks) {
-        await say({ text: chunk, thread_ts: threadTs });
+        // Post additional chunks as separate messages
+        for (let i = 1; i < chunks.length; i++) {
+          await say({ text: chunks[i], thread_ts: threadTs });
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[slack] Error processing message:`, errorMsg);
 
-      // Delete thinking message and post error
-      if (thinkingMsg.ts) {
-        await client.chat.delete({
+      if (progressTs) {
+        await client.chat.update({
           channel: msg.channel,
-          ts: thinkingMsg.ts,
+          ts: progressTs,
+          text: `:x: Error: ${errorMsg.slice(0, 500)}`,
         }).catch(() => {});
       }
-
-      await say({
-        text: `:x: Error: ${errorMsg.slice(0, 500)}`,
-        thread_ts: threadTs,
-      });
     }
   });
 
@@ -164,14 +202,11 @@ function splitMessage(text: string, maxLen: number): string[] {
       break;
     }
 
-    // Try to split at a newline boundary
     let splitIdx = remaining.lastIndexOf("\n", maxLen);
     if (splitIdx < maxLen * 0.5) {
-      // No good newline break, split at space
       splitIdx = remaining.lastIndexOf(" ", maxLen);
     }
     if (splitIdx < maxLen * 0.3) {
-      // No good break point, hard split
       splitIdx = maxLen;
     }
 
