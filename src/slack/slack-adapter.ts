@@ -47,14 +47,9 @@ export function createSlackAdapter(
     const threadTs = msg.thread_ts ?? msg.ts;
     const isInThread = Boolean(msg.thread_ts);
 
-    // Only respond in DMs
-    try {
-      const info = await client.conversations.info({ channel: msg.channel });
-      const ch = info.channel as Record<string, unknown> | undefined;
-      if (ch && !ch.is_im) {
-        return;
-      }
-    } catch {
+    // Only respond in DMs (use channel_type from event payload — no extra API call needed)
+    const channelType = (message as { channel_type?: string }).channel_type;
+    if (channelType !== "im") {
       return;
     }
 
