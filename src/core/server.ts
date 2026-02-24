@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { BridgeService } from "./bridge-service.js";
 import { startCronSync, configurePaths, syncSchedules } from "./cron-sync.js";
+import { createSlackAdapter } from "../slack/slack-adapter.js";
 import type { NoahConfig } from "./types.js";
 import { DEFAULTS } from "./types.js";
 
@@ -76,7 +77,7 @@ function loadConfig(): NoahConfig {
   };
 }
 
-function main() {
+async function main() {
   const config = loadConfig();
 
   // Configure cron-sync paths
@@ -276,6 +277,25 @@ function main() {
   // Start schedule sync watcher
   const cronSync = startCronSync();
 
+  // Start Slack adapter if tokens are configured
+  let slackAdapter: { start: () => Promise<void>; stop: () => Promise<void> } | null = null;
+  const slackBotToken = process.env.SLACK_BOT_TOKEN;
+  const slackAppToken = process.env.SLACK_APP_TOKEN;
+  if (slackBotToken && slackAppToken) {
+    try {
+      slackAdapter = createSlackAdapter(
+        { botToken: slackBotToken, appToken: slackAppToken },
+        service,
+      );
+      await slackAdapter.start();
+    } catch (err) {
+      console.error("[noah-agent] Failed to start Slack adapter:", err);
+      slackAdapter = null;
+    }
+  } else {
+    console.log("[noah-agent] Slack not configured (set SLACK_BOT_TOKEN and SLACK_APP_TOKEN)");
+  }
+
   server.listen(config.port, "0.0.0.0", () => {
     console.log(`[noah-agent] Listening on 0.0.0.0:${config.port}`);
     console.log(`[noah-agent] Claude command: ${config.claudeCommand}`);
@@ -283,21 +303,17 @@ function main() {
     console.log(`[noah-agent] Schedules: ${config.schedulesDir}`);
   });
 
-  process.on("SIGTERM", () => {
+  const shutdown = async () => {
     console.log("[noah-agent] Shutting down...");
     cronSync.stop();
+    if (slackAdapter) await slackAdapter.stop();
     service.shutdown();
     server.close();
     process.exit(0);
-  });
+  };
 
-  process.on("SIGINT", () => {
-    console.log("[noah-agent] Interrupted, shutting down...");
-    cronSync.stop();
-    service.shutdown();
-    server.close();
-    process.exit(0);
-  });
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 main();
