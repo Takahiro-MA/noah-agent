@@ -14,6 +14,7 @@ type SlackAdapter = {
 
 const UPDATE_INTERVAL_MS = 2000;
 const MAX_SLACK_LENGTH = 3900;
+const SLACK_TIMEOUT_MS = 600_000; // 10 min — generous for long Claude tasks
 
 /**
  * Create a Slack adapter that bridges DM messages to the BridgeService.
@@ -76,16 +77,25 @@ export function createSlackAdapter(
           message: text,
           sessionId,
           streaming: true,
+          timeoutMs: SLACK_TIMEOUT_MS,
         });
 
       threadSessions.set(threadTs, assignedSessionId);
 
       // Progressive streaming update
-      const resultText = await new Promise<string>((resolve, reject) => {
+      const { text: resultText, timedOut } = await new Promise<{ text: string; timedOut: boolean }>((resolve) => {
         let accumulated = "";
         let lastUpdateAt = 0;
         let updateTimer: ReturnType<typeof setTimeout> | null = null;
         let isThinking = true;
+        let settled = false;
+
+        const finish = (finalText: string, timedOut: boolean) => {
+          if (settled) return;
+          settled = true;
+          if (updateTimer) clearTimeout(updateTimer);
+          resolve({ text: finalText, timedOut });
+        };
 
         const updateSlackMessage = () => {
           if (!progressTs || !accumulated) return;
@@ -131,30 +141,38 @@ export function createSlackAdapter(
         });
 
         events.on("done", (result: BridgeTaskResult) => {
-          if (updateTimer) clearTimeout(updateTimer);
-          resolve(result.text || accumulated);
+          finish(result.text || accumulated, false);
         });
 
         events.on("error", (err: Error) => {
-          if (updateTimer) clearTimeout(updateTimer);
-          reject(err);
+          console.error(`[slack] Stream error: ${err.message}`);
+          // On timeout/error, use whatever we accumulated so far
+          // instead of showing an error to the user
+          if (accumulated.trim()) {
+            finish(accumulated, true);
+          } else {
+            finish(`:warning: Processing took too long. Please try again or simplify your request.`, true);
+          }
         });
       });
 
-      // Final update: replace progress message with final result
+      // Final result: post as a NEW message (ensures Push notification)
+      // and clean up the progress message
       if (progressTs) {
-        const chunks = splitMessage(resultText, MAX_SLACK_LENGTH);
-        // Update first message in-place
+        // Remove the progress message (replace with minimal text)
         await client.chat.update({
           channel: msg.channel,
           ts: progressTs,
-          text: chunks[0],
+          text: timedOut
+            ? ":hourglass: _(response was interrupted — partial result below)_"
+            : ":white_check_mark: _(done)_",
         }).catch(() => {});
+      }
 
-        // Post additional chunks as separate messages
-        for (let i = 1; i < chunks.length; i++) {
-          await say({ text: chunks[i], thread_ts: threadTs });
-        }
+      // Post final result as new thread reply — this triggers Push notification
+      const chunks = splitMessage(resultText, MAX_SLACK_LENGTH);
+      for (const chunk of chunks) {
+        await say({ text: chunk, thread_ts: threadTs });
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
