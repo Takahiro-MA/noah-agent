@@ -16,6 +16,7 @@ export type ScheduleDefinition = {
         model?: string;
         timeoutSeconds?: number;
       };
+  precondition?: { kind: "fileExists"; path: string };
   deleteAfterRun?: boolean;
 };
 
@@ -26,6 +27,7 @@ export type JobState = {
   enabled: boolean;
   schedule: ScheduleDefinition["schedule"];
   payload: ScheduleDefinition["payload"];
+  precondition?: ScheduleDefinition["precondition"];
   deleteAfterRun: boolean;
   lastRunAtMs?: number;
   lastError?: string;

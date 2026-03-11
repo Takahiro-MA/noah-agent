@@ -298,15 +298,16 @@ async function main() {
   });
 
   // Start Slack adapter if tokens are configured
-  let slackAdapter: { start: () => Promise<void>; stop: () => Promise<void> } | null = null;
+  let slackAdapter: ReturnType<typeof createSlackAdapter> | null = null;
   const slackBotToken = process.env.SLACK_BOT_TOKEN;
   const slackAppToken = process.env.SLACK_APP_TOKEN;
   if (slackBotToken && slackAppToken) {
     try {
       slackAdapter = createSlackAdapter(
-        { botToken: slackBotToken, appToken: slackAppToken },
+        { botToken: slackBotToken, appToken: slackAppToken, stateDir: config.stateDir },
         service,
       );
+      service.setProtectedSessionIdsFn(() => slackAdapter!.getProtectedSessionIds());
       await slackAdapter.start();
     } catch (err) {
       console.error("[noah-agent] Failed to start Slack adapter:", err);

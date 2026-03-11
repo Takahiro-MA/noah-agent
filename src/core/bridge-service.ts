@@ -9,6 +9,7 @@ export class BridgeService {
   private readonly tasks = new Map<string, BridgeTask>();
   private readonly config: NoahConfig;
   private cleanupTimer?: ReturnType<typeof setInterval>;
+  private protectedSessionIdsFn?: () => ReadonlySet<string>;
 
   constructor(config: NoahConfig) {
     this.config = config;
@@ -16,8 +17,17 @@ export class BridgeService {
 
     // Periodic session cleanup every 10 minutes
     this.cleanupTimer = setInterval(() => {
-      this.sessions.cleanup(config.sessionIdleMs, config.sessionExpireMs);
+      const protectedIds = this.protectedSessionIdsFn?.();
+      this.sessions.cleanup(config.sessionIdleMs, config.sessionExpireMs, protectedIds);
     }, 10 * 60 * 1000);
+  }
+
+  /**
+   * Register a callback that returns session IDs that should never be cleaned up.
+   * Used by Slack adapter to protect sessions tied to active threads.
+   */
+  setProtectedSessionIdsFn(fn: () => ReadonlySet<string>): void {
+    this.protectedSessionIdsFn = fn;
   }
 
   private prepareTask(params: BridgeTaskParams): {

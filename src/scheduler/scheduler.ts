@@ -177,6 +177,16 @@ export class Scheduler {
     const job = jobs.find((j) => j.id === jobId);
     if (!job || !job.enabled) return;
 
+    // Check precondition before spawning Claude CLI
+    if (job.precondition) {
+      if (job.precondition.kind === "fileExists") {
+        if (!fs.existsSync(job.precondition.path)) {
+          console.log(`[scheduler] Skipping ${jobId}: precondition file not found (${job.precondition.path})`);
+          return;
+        }
+      }
+    }
+
     this.runningCount++;
     console.log(`[scheduler] Executing job: ${job.id} (${job.name})`);
 

@@ -65,5 +65,5 @@ export const DEFAULTS: NoahConfig = {
   stateDir: `${process.env.HOME}/.noah-agent/state`,
   schedulesDir: `${process.env.HOME}/noah-agent/config/schedules`,
   sessionIdleMs: 30 * 60 * 1000,
-  sessionExpireMs: 24 * 60 * 60 * 1000,
+  sessionExpireMs: 30 * 24 * 60 * 60 * 1000,
 };

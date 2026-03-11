@@ -3,6 +3,10 @@
   "name": "Paper Trader 生存監視",
   "description": "Paper Traderのログ更新を30分ごとに確認し、異常時にSlack通知",
   "enabled": true,
+  "precondition": {
+    "kind": "fileExists",
+    "path": "/trading/logs/.trader_active"
+  },
   "schedule": {
     "kind": "every",
     "everyMs": 1800000

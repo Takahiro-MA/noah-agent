@@ -1,15 +1,18 @@
 import { App } from "@slack/bolt";
 import type { BridgeService } from "../core/bridge-service.js";
 import type { BridgeTaskResult, StreamEvent } from "../core/types.js";
+import { ThreadSessionStore } from "./thread-session-store.js";
 
 export type SlackConfig = {
   botToken: string;
   appToken: string;
+  stateDir: string;
 };
 
 type SlackAdapter = {
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  getProtectedSessionIds: () => ReadonlySet<string>;
 };
 
 const UPDATE_INTERVAL_MS = 2000;
@@ -28,8 +31,8 @@ export function createSlackAdapter(
   config: SlackConfig,
   service: BridgeService,
 ): SlackAdapter {
-  // Thread timestamp → bridge session ID mapping
-  const threadSessions = new Map<string, string>();
+  // Thread timestamp → bridge session ID mapping (persisted to disk)
+  const threadSessions = new ThreadSessionStore(config.stateDir);
 
   const app = new App({
     token: config.botToken,
@@ -55,8 +58,9 @@ export function createSlackAdapter(
     }
 
     let sessionId: string | undefined;
-    if (isInThread && threadSessions.has(threadTs)) {
-      sessionId = threadSessions.get(threadTs);
+    const existingSession = threadSessions.get(threadTs);
+    if (isInThread && existingSession) {
+      sessionId = existingSession;
     }
 
     console.log(
@@ -196,6 +200,9 @@ export function createSlackAdapter(
     async stop() {
       await app.stop();
       console.log("[noah-agent] Slack disconnected");
+    },
+    getProtectedSessionIds() {
+      return threadSessions.allSessionIds();
     },
   };
 }

@@ -104,12 +104,17 @@ export class SessionStore {
     return Object.values(this.data.sessions);
   }
 
-  cleanup(idleMs: number, expireMs: number): number {
+  cleanup(idleMs: number, expireMs: number, protectedIds?: ReadonlySet<string>): number {
     const now = Date.now();
     let removed = 0;
     const updated: Record<string, BridgeSession> = {};
 
     for (const [id, session] of Object.entries(this.data.sessions)) {
+      // Never expire sessions actively used by Slack threads
+      if (protectedIds?.has(id)) {
+        updated[id] = session;
+        continue;
+      }
       const age = now - session.lastActivityAt;
       if (age > expireMs) {
         removed++;

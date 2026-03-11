@@ -5,5 +5,5 @@
   "watchdogMs": 300000,
   "claudeCommand": "claude",
   "sessionIdleMs": 1800000,
-  "sessionExpireMs": 86400000
+  "sessionExpireMs": 2592000000
 }

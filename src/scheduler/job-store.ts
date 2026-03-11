@@ -63,6 +63,7 @@ export class JobStore {
           enabled: def.enabled !== false,
           schedule: def.schedule,
           payload: def.payload,
+          precondition: def.precondition,
           deleteAfterRun: def.deleteAfterRun ?? false,
           lastRunAtMs: existing?.lastRunAtMs,
           lastError: existing?.lastError,
