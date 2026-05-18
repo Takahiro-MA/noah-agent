@@ -1,8 +1,8 @@
 {
   "port": 18790,
   "model": "opus",
-  "timeoutMs": 600000,
-  "watchdogMs": 300000,
+  "timeoutMs": 1800000,
+  "watchdogMs": 900000,
   "claudeCommand": "claude",
   "sessionIdleMs": 1800000,
   "sessionExpireMs": 2592000000
