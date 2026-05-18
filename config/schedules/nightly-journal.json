@@ -10,7 +10,7 @@
   },
   "payload": {
     "kind": "agentTurn",
-    "message": "今日の日記タスク: 今日のセッション履歴を確認し、1日の出来事・学び・感想を簡潔にまとめて。重要な決定や発見があればハイライトして。結果はSlackの#generalに投稿して。",
-    "timeoutSeconds": 120
+    "message": "今日の日記タスク: 以下を統合して1日の振り返りをまとめて。\n\n【プロジェクト発見】\nactive プロジェクトをハードコードしない。次の glob で CLAUDE.md を持つディレクトリを列挙し、active project として扱う：\n- /workspace/*/CLAUDE.md\n- /trading/CLAUDE.md\n\n【A. セッション履歴】\n/home/noah/.claude/projects/ 配下にある .jsonl のうち、今日 (YYYY-MM-DD) 更新されたものをすべて列挙。各ファイルの tail を確認し、/workspace/ または /trading/ に言及している会話を採用。それ以外のリポジトリ作業は無視。\n\n【B. ハンドオフされた記録】\n今日の日付 (YYYY-MM-DD) を含むファイルを glob でスキャンし、内容を必ず取り込む：\n- /workspace/*/notes/YYYY-MM-DD-*.md\n- /trading/notes/YYYY-MM-DD-*.md\n\n【C. ステータス変更】\n以下のファイルが今日更新されていれば言及：\n- /workspace/*/STATUS.md\n- /workspace/*/PROJECT_STATUS.md\n- /workspace/*/docs/PROJECT_STATUS.md\n- /workspace/*/docs/DESIGN_*.md\n- /trading/STATUS.md\n- /trading/DESIGN_*.md\n\n【まとめ方】\n- 発見した active project ごとに、今日の進捗・決定・気づきを箇条書き\n- 当日活動がないプロジェクトは省略してよい\n- 横断的な学びがあれば末尾に追記\n- プロジェクト名は CLAUDE.md の冒頭タイトルから取る（ハードコードしない）\n\n結果はSlackの #general に投稿。",
+    "timeoutSeconds": 240
   }
 }

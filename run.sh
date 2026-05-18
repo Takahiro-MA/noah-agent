@@ -14,10 +14,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="noah-agent"
 WORKSPACE_DIR="${NOAH_WORKSPACE_DIR:-$HOME/noah-workspace}"
+STATE_DIR="${NOAH_STATE_DIR:-$HOME/noah-state}"
 GMO_TRADING_DIR="$HOME/.openclaw/workspace/projects/gmo-trading"
 
 # Ensure directories exist on host
 mkdir -p "$WORKSPACE_DIR"
+mkdir -p "$STATE_DIR"
 
 # Build if image doesn't exist or --build flag passed
 if [[ "${1:-}" == "--build" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
@@ -32,8 +34,11 @@ fi
 VOLUMES=(
   -v "$HOME/.claude:/home/noah/.claude"
   -v "$HOME/.claude.json:/home/noah/.claude.json"
+  -v "$HOME/.ssh:/home/noah/.ssh:ro"
+  -v "$HOME/.gitconfig:/home/noah/.gitconfig:ro"
   -v "$SCRIPT_DIR/config:/app/config:ro"
   -v "$WORKSPACE_DIR:/workspace"
+  -v "$STATE_DIR:/home/noah/.noah-agent"
 )
 
 # Mount GMO trading bot if it exists
