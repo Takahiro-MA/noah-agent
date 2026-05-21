@@ -59,6 +59,7 @@ docker run --rm $DOCKER_TTY \
   --env-file "$SCRIPT_DIR/.env" \
   -e "NOAH_WORKSPACE_DIR=/workspace" \
   -e "GMO_TRADING_DIR=/trading" \
+  -e "TZ=Asia/Tokyo" \
   "${VOLUMES[@]}" \
   -p 18790:18790 \
   "$IMAGE_NAME"
