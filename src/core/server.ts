@@ -304,7 +304,7 @@ async function main() {
   if (slackBotToken && slackAppToken) {
     try {
       slackAdapter = createSlackAdapter(
-        { botToken: slackBotToken, appToken: slackAppToken, stateDir: config.stateDir },
+        { botToken: slackBotToken, appToken: slackAppToken, stateDir: config.stateDir, timeoutMs: config.timeoutMs },
         service,
       );
       service.setProtectedSessionIdsFn(() => slackAdapter!.getProtectedSessionIds());

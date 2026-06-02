@@ -7,6 +7,7 @@ export type SlackConfig = {
   botToken: string;
   appToken: string;
   stateDir: string;
+  timeoutMs: number;
 };
 
 type SlackAdapter = {
@@ -15,23 +16,22 @@ type SlackAdapter = {
   getProtectedSessionIds: () => ReadonlySet<string>;
 };
 
-const UPDATE_INTERVAL_MS = 2000;
+const FLUSH_INTERVAL_MS = 15_000;
+const FLUSH_MIN_DELTA_CHARS = 50;
 const MAX_SLACK_LENGTH = 3900;
-const SLACK_TIMEOUT_MS = 600_000; // 10 min — generous for long Claude tasks
 
 /**
  * Create a Slack adapter that bridges DM messages to the BridgeService.
  *
  * - DMs are forwarded to Claude CLI via BridgeService
  * - Threads map to sessions for multi-turn conversations
- * - Streaming text is progressively updated in Slack (chat.update)
- * - Results are posted as threaded replies
+ * - Streaming output is APPENDED as new threaded replies (never overwritten)
+ * - The initial "thinking" message receives only status-marker edits
  */
 export function createSlackAdapter(
   config: SlackConfig,
   service: BridgeService,
 ): SlackAdapter {
-  // Thread timestamp → bridge session ID mapping (persisted to disk)
   const threadSessions = new ThreadSessionStore(config.stateDir);
 
   const app = new App({
@@ -40,7 +40,6 @@ export function createSlackAdapter(
     socketMode: true,
   });
 
-  // Handle DM messages
   app.message(async ({ message, say, client }) => {
     const msg = message as { subtype?: string; bot_id?: string; text?: string; thread_ts?: string; ts: string; channel: string; user?: string };
     if (msg.subtype || msg.bot_id) return;
@@ -51,7 +50,6 @@ export function createSlackAdapter(
     const threadTs = msg.thread_ts ?? msg.ts;
     const isInThread = Boolean(msg.thread_ts);
 
-    // Only respond in DMs (use channel_type from event payload — no extra API call needed)
     const channelType = (message as { channel_type?: string }).channel_type;
     if (channelType !== "im") {
       return;
@@ -67,12 +65,11 @@ export function createSlackAdapter(
       `[slack] Message from ${msg.user ?? "unknown"} in thread ${threadTs}: ${text.slice(0, 80)}${text.length > 80 ? "..." : ""}`,
     );
 
-    // Post initial "thinking" message (will be updated progressively)
+    // Status marker (never carries content — only state transitions)
     const progressMsg = await say({
       text: ":hourglass_flowing_sand: Thinking...",
       thread_ts: threadTs,
     });
-
     const progressTs = progressMsg.ts;
 
     try {
@@ -81,102 +78,105 @@ export function createSlackAdapter(
           message: text,
           sessionId,
           streaming: true,
-          timeoutMs: SLACK_TIMEOUT_MS,
+          timeoutMs: config.timeoutMs,
         });
 
       threadSessions.set(threadTs, assignedSessionId);
 
-      // Progressive streaming update
-      const { text: resultText, timedOut } = await new Promise<{ text: string; timedOut: boolean }>((resolve) => {
-        let accumulated = "";
-        let lastUpdateAt = 0;
-        let updateTimer: ReturnType<typeof setTimeout> | null = null;
-        let isThinking = true;
-        let settled = false;
+      // Append-style flusher: posts new threaded replies with the delta
+      let accumulated = "";
+      let lastFlushedLength = 0;
+      let flushInFlight = Promise.resolve();
 
-        const finish = (finalText: string, timedOut: boolean) => {
+      const flushDelta = async (force = false): Promise<void> => {
+        const pending = accumulated.length - lastFlushedLength;
+        if (!force && pending < FLUSH_MIN_DELTA_CHARS) return;
+        if (pending <= 0) return;
+
+        const delta = accumulated.slice(lastFlushedLength);
+        lastFlushedLength = accumulated.length;
+
+        // Chain flushes to keep ordering deterministic
+        flushInFlight = flushInFlight.then(async () => {
+          const chunks = splitMessage(delta, MAX_SLACK_LENGTH);
+          for (const chunk of chunks) {
+            try {
+              await say({ text: chunk, thread_ts: threadTs });
+            } catch (e) {
+              console.error("[slack] Failed to post delta chunk:", e);
+            }
+          }
+        });
+        await flushInFlight;
+      };
+
+      let intervalTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+        flushDelta(false).catch(() => {});
+      }, FLUSH_INTERVAL_MS);
+
+      const { text: resultText, timedOut } = await new Promise<{ text: string; timedOut: boolean }>((resolve) => {
+        let settled = false;
+        const settle = (finalText: string, timedOut: boolean) => {
           if (settled) return;
           settled = true;
-          if (updateTimer) clearTimeout(updateTimer);
+          if (intervalTimer) {
+            clearInterval(intervalTimer);
+            intervalTimer = null;
+          }
           resolve({ text: finalText, timedOut });
-        };
-
-        const updateSlackMessage = () => {
-          if (!progressTs || !accumulated) return;
-
-          const display = accumulated.length > MAX_SLACK_LENGTH
-            ? accumulated.slice(0, MAX_SLACK_LENGTH) + "\n\n... _(truncated, full response follows)_"
-            : accumulated;
-
-          const prefix = isThinking ? ":brain: " : "";
-          const suffix = "\n\n:writing_hand: _generating..._";
-
-          client.chat.update({
-            channel: msg.channel,
-            ts: progressTs,
-            text: prefix + display + suffix,
-          }).catch(() => {
-            // Best-effort update
-          });
-
-          lastUpdateAt = Date.now();
-        };
-
-        const scheduleUpdate = () => {
-          if (updateTimer) return;
-          const elapsed = Date.now() - lastUpdateAt;
-          const delay = Math.max(0, UPDATE_INTERVAL_MS - elapsed);
-          updateTimer = setTimeout(() => {
-            updateTimer = null;
-            updateSlackMessage();
-          }, delay);
         };
 
         events.on("event", (evt: StreamEvent) => {
           if (evt.type === "text_delta") {
-            isThinking = false;
             accumulated += evt.text;
-            scheduleUpdate();
-          } else if (evt.type === "thinking_delta") {
-            isThinking = true;
           } else if (evt.type === "result") {
-            accumulated = evt.text || accumulated;
+            // Final canonical text may differ from accumulated; sync up
+            if (evt.text && evt.text.length > accumulated.length) {
+              accumulated = evt.text;
+            }
           }
+          // thinking_delta and others: ignore for output
         });
 
         events.on("done", (result: BridgeTaskResult) => {
-          finish(result.text || accumulated, false);
+          if (result.text && result.text.length > accumulated.length) {
+            accumulated = result.text;
+          }
+          settle(accumulated, false);
         });
 
         events.on("error", (err: Error) => {
           console.error(`[slack] Stream error: ${err.message}`);
-          // On timeout/error, use whatever we accumulated so far
-          // instead of showing an error to the user
-          if (accumulated.trim()) {
-            finish(accumulated, true);
-          } else {
-            finish(`:warning: Processing took too long. Please try again or simplify your request.`, true);
-          }
+          settle(accumulated, true);
         });
       });
 
-      // Final result: post as a NEW message (ensures Push notification)
-      // and clean up the progress message
+      // Flush any remaining delta as final chunk(s)
+      await flushDelta(true);
+      // Wait for any in-flight posts to complete
+      await flushInFlight;
+
+      // Update the status marker (no content, just a tag)
       if (progressTs) {
-        // Remove the progress message (replace with minimal text)
+        const marker = timedOut
+          ? (resultText.trim()
+              ? ":warning: _(interrupted — partial result above)_"
+              : ":warning: Processing took too long. Please try again or simplify your request.")
+          : ":white_check_mark: _(done)_";
         await client.chat.update({
           channel: msg.channel,
           ts: progressTs,
-          text: timedOut
-            ? ":hourglass: _(response was interrupted — partial result below)_"
-            : ":white_check_mark: _(done)_",
+          text: marker,
         }).catch(() => {});
       }
 
-      // Post final result as new thread reply — this triggers Push notification
-      const chunks = splitMessage(resultText, MAX_SLACK_LENGTH);
-      for (const chunk of chunks) {
-        await say({ text: chunk, thread_ts: threadTs });
+      // Safety net: if nothing was ever flushed (no text_delta events), post the
+      // final text now so the user isn't left with only a status marker.
+      if (lastFlushedLength === 0 && resultText.trim()) {
+        const chunks = splitMessage(resultText, MAX_SLACK_LENGTH);
+        for (const chunk of chunks) {
+          await say({ text: chunk, thread_ts: threadTs }).catch(() => {});
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
