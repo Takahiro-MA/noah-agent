@@ -21,6 +21,7 @@ export type BridgeTaskResult = {
   text: string;
   claudeSessionId?: string;
   durationMs: number;
+  awaitingInput?: boolean;
 };
 
 export type StreamEvent =

@@ -19,6 +19,11 @@ type SlackAdapter = {
 const FLUSH_INTERVAL_MS = 15_000;
 const FLUSH_MIN_DELTA_CHARS = 50;
 const MAX_SLACK_LENGTH = 3900;
+const NEEDS_INPUT_MARKER = "<<NEEDS-INPUT>>";
+
+function stripMarker(s: string): string {
+  return s.split(NEEDS_INPUT_MARKER).join("");
+}
 
 /**
  * Create a Slack adapter that bridges DM messages to the BridgeService.
@@ -87,6 +92,7 @@ export function createSlackAdapter(
       let accumulated = "";
       let lastFlushedLength = 0;
       let flushInFlight = Promise.resolve();
+      let awaitingInput = false;
 
       const flushDelta = async (force = false): Promise<void> => {
         const pending = accumulated.length - lastFlushedLength;
@@ -128,20 +134,23 @@ export function createSlackAdapter(
 
         events.on("event", (evt: StreamEvent) => {
           if (evt.type === "text_delta") {
-            accumulated += evt.text;
+            accumulated = stripMarker(accumulated + evt.text);
           } else if (evt.type === "result") {
             // Final canonical text may differ from accumulated; sync up
-            if (evt.text && evt.text.length > accumulated.length) {
-              accumulated = evt.text;
+            if (evt.text) {
+              const cleaned = stripMarker(evt.text);
+              if (cleaned.length > accumulated.length) accumulated = cleaned;
             }
           }
           // thinking_delta and others: ignore for output
         });
 
         events.on("done", (result: BridgeTaskResult) => {
-          if (result.text && result.text.length > accumulated.length) {
-            accumulated = result.text;
+          if (result.text) {
+            const cleaned = stripMarker(result.text);
+            if (cleaned.length > accumulated.length) accumulated = cleaned;
           }
+          if (result.awaitingInput === true) awaitingInput = true;
           settle(accumulated, false);
         });
 
@@ -158,11 +167,16 @@ export function createSlackAdapter(
 
       // Update the status marker (no content, just a tag)
       if (progressTs) {
-        const marker = timedOut
-          ? (resultText.trim()
-              ? ":warning: _(interrupted — partial result above)_"
-              : ":warning: Processing took too long. Please try again or simplify your request.")
-          : ":white_check_mark: _(done)_";
+        let marker: string;
+        if (awaitingInput) {
+          marker = ":speech_balloon: _(質問中・応答待ち)_";
+        } else if (timedOut) {
+          marker = resultText.trim()
+            ? ":warning: _(interrupted — partial result above)_"
+            : ":warning: Processing took too long. Please try again or simplify your request.";
+        } else {
+          marker = ":white_check_mark: _(done)_";
+        }
         await client.chat.update({
           channel: msg.channel,
           ts: progressTs,

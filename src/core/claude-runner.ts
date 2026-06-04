@@ -266,6 +266,37 @@ export function runClaudeBridgeStream(params: ClaudeRunnerParams): StreamHandle 
   let lastResultEvent: StreamEvent | null = null;
   const stderrChunks: Buffer[] = [];
 
+  // === Question detection (B + A two-tier) ===
+  // Primary: explicit marker emitted by Claude per CLAUDE.md instruction.
+  // Fallback: trailing patterns that strongly suggest a question, with debounce
+  // to avoid false positives mid-paragraph.
+  const NEEDS_INPUT_MARKER = "<<NEEDS-INPUT>>";
+  const FALLBACK_PATTERNS: RegExp[] = [
+    /確認させてください\s*$/,
+    /どちらにしますか[？?]?\s*$/,
+    /教えてください\s*$/,
+    /進めて(良|よ)いですか[？?]?\s*$/,
+    /判断お?願いします\s*$/,
+    /[？?]\s*$/,
+  ];
+  const FALLBACK_DEBOUNCE_MS = 3000;
+  let textBuffer = "";
+  let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let inputWaitTriggered = false;
+
+  const triggerInputWait = (reason: string) => {
+    if (inputWaitTriggered) return;
+    inputWaitTriggered = true;
+    console.log(`[claude-runner] Question detected (${reason}); stopping to wait for user input`);
+    if (fallbackTimer) clearTimeout(fallbackTimer);
+    killProc();
+    emitter.emit("done", {
+      text: textBuffer,
+      durationMs: Date.now() - started,
+      awaitingInput: true,
+    } satisfies BridgeTaskResult);
+  };
+
   // Watchdog
   let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   const resetWatchdog = () => {
@@ -317,7 +348,44 @@ export function runClaudeBridgeStream(params: ClaudeRunnerParams): StreamHandle 
       for (const event of events) {
         if (event.type === "result") {
           lastResultEvent = event;
+          emitter.emit("event", event);
+          continue;
         }
+
+        if (event.type === "text_delta") {
+          // Always emit the delta to downstream first (sanitization happens
+          // in slack-adapter so the marker never reaches Slack)
+          emitter.emit("event", event);
+
+          if (inputWaitTriggered) continue;
+
+          textBuffer += event.text;
+
+          // Primary: explicit marker
+          if (textBuffer.includes(NEEDS_INPUT_MARKER)) {
+            // Trim marker from buffer for cleaner reporting
+            textBuffer = textBuffer.replace(NEEDS_INPUT_MARKER, "");
+            triggerInputWait("explicit marker");
+            return;
+          }
+
+          // Fallback: trailing pattern + debounce
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
+          const tail = textBuffer.slice(-500);
+          for (const pat of FALLBACK_PATTERNS) {
+            if (pat.test(tail)) {
+              fallbackTimer = setTimeout(() => {
+                triggerInputWait(`fallback pattern ${pat.source}`);
+              }, FALLBACK_DEBOUNCE_MS);
+              break;
+            }
+          }
+          continue;
+        }
+
         emitter.emit("event", event);
       }
     }
@@ -339,6 +407,7 @@ export function runClaudeBridgeStream(params: ClaudeRunnerParams): StreamHandle 
   proc.on("close", (code) => {
     if (watchdogTimer) clearTimeout(watchdogTimer);
     clearTimeout(overallTimer);
+    if (fallbackTimer) clearTimeout(fallbackTimer);
 
     if (cancelled) return;
 
